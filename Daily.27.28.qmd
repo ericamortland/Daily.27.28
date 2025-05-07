@@ -1,0 +1,130 @@
+---
+project:
+  title: "csu-ess-daily21"
+  output-dir: docs
+  type: website
+format:
+  html:
+    self-contained: true
+---
+
+```{r}
+library(osmdata)  
+library(sf)       
+library(AOI) 
+library(terra)
+library(dplyr)
+library(ggplot2)
+
+# Step 1: Get bounding box for Fort Collins
+fc_bbox <- AOI::geocode("Fort Collins", bbox = TRUE) |> 
+  st_transform(4326)
+```
+
+```{r}
+# Step 2: Download OSM data for waterways
+fc_waterways <- opq(bbox = st_bbox(fc_bbox)) |>
+  add_osm_feature(key = "waterway") |>
+  osmdata_sf()
+
+osm_lines <- fc_waterways$osm_lines
+```
+
+```{r}
+# Step 3: Filter for the Poudre River lines
+poudre_lines <- osm_lines %>%
+  filter(grepl("Poudre", name, ignore.case = TRUE))
+
+# Step 4: Combine the lines to form the river
+poudre_river <- st_union(poudre_lines)
+poudre_river <- st_as_sf(poudre_river)
+```
+
+```{r}
+# Step 5: Calculate river length
+river_length <- st_length(poudre_river)
+print(river_length)
+```
+
+```{r}
+# Step 6: Convert river geometry to points
+poudre_pts <- st_cast(poudre_river, "POINT")
+```
+
+```{r}
+# Step 7: Read elevation data and crop to Fort Collins bbox
+url <- "https://raw.githubusercontent.com/mikejohnson51/csu-ess-330/main/resources/foco-elev-cm.tif"
+vsi_url <- paste0("/vsicurl/", url)
+
+# Read the raster data
+elev <- rast(vsi_url)
+
+# Optional: Crop the raster to the Fort Collins bounding box
+bb <- AOI::geocode("Fort Collins", bbox = TRUE) |> st_transform(5070)
+elev <- crop(elev, bb)
+```
+
+```{r}
+# Step 8: Extract elevation values for each point
+elev_vals <- extract(elev, vect(poudre_pts))
+
+# Bind extracted elevation values to the points
+poudre_pts <- bind_cols(poudre_pts, elev_vals)
+
+# Add a column for point IDs
+poudre_pts <- poudre_pts %>% mutate(ID = 1:n())
+```
+
+```{r}
+# Step 9: Calculate sinuosity
+straight_dist <- st_distance(poudre_pts[1, ], poudre_pts[nrow(poudre_pts), ])
+sinuosity <- as.numeric(river_length / straight_dist)
+print(paste("Sinuosity:", round(sinuosity, 3)))
+```
+
+```{r}
+poudre_pts <- poudre_pts %>% filter(!is.na(dem))
+
+poudre_pts <- st_transform(poudre_pts, crs = 5070)  
+elev_diff_cm <- poudre_pts$dem[1] - poudre_pts$dem[nrow(poudre_pts)]
+
+elev_diff_m <- elev_diff_cm / 100
+
+river_length_m <- as.numeric(st_length(poudre_river)) / 1000 
+slope <- elev_diff_m / river_length_m
+
+print(paste("Slope:", round(slope, 5), "m/m"))
+```
+
+```{r}
+
+colnames(poudre_pts) <- c("ID", "dem", "geometry")
+
+poudre_pts_df <- as.data.frame(poudre_pts)
+
+head(poudre_pts_df)
+```
+
+```{r}
+# Step 12: Create a line plot for elevation
+ggplot(poudre_pts_df) +
+  geom_line(aes(x = ID, y = dem), color = "blue") +
+  labs(x = "Point ID", y = "Elevation (cm)", title = "River Elevation Profile") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+st_geometry(poudre_pts) <- "geometry"
+
+ggplot() +
+  geom_sf(data = poudre_pts, aes(color = dem), size = 1.5) +
+  scale_color_viridis_c() +  # A nice color scale for elevation
+  labs(title = "River Profile Colored by Elevation", color = "Elevation (cm)") +
+  theme_minimal()
+```
+
+
+
+
+
